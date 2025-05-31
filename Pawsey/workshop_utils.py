@@ -977,3 +977,191 @@ def CompareToNoiseResults(profdata : dict, b1 : str, nqubits : List[int] = None,
                 gpuval1, gpuval2 = d1['gpu'][k], d2['gpu'][k]
                 display(Markdown(f'CPU | {cpuval1}, {cpuval2}'))
                 display(Markdown(f'GPU | {gpuval1}, {gpuval2}'))
+
+
+
+
+######################################
+#
+# Analog Combinatorial Optimisation
+#
+######################################
+
+import networkx as nx
+
+def generate_mis_graph_from_2sat(clauses):
+
+    G = nx.Graph()
+
+    for clause_idx, clause in enumerate(clauses):
+        for lit in clause:
+            node = len(G)
+            var = abs(lit)
+            val = 1 if lit > 0 else 0
+            G.add_node(node, clause=clause_idx, var=var, val=val)
+
+    nodes = list(G.nodes(data=True))
+    for i, (u, udata) in enumerate(nodes):
+        for v, vdata in nodes[i+1:]:
+            if udata['clause'] == vdata['clause']:
+                G.add_edge(u, v, type='clause')
+            elif udata['var'] == vdata['var'] and udata['val'] != vdata['val']:
+                G.add_edge(u, v, type='var')
+
+    return G
+
+def visualize_graph(G):
+
+    pos = nx.spring_layout(G, seed=42)
+    
+    clause_edges = [(u, v) for u, v, d in G.edges(data=True) if d['type'] == 'clause']
+    var_edges    = [(u, v) for u, v, d in G.edges(data=True) if d['type'] == 'var']
+    
+    nx.draw_networkx_nodes(G, pos, node_size=1000)
+    
+    nx.draw_networkx_edges(G, pos, edgelist=clause_edges, style='solid', edge_color = 'red')
+    nx.draw_networkx_edges(G, pos, edgelist=var_edges,   style='dashed')
+    
+    labels = {
+        n: f"c{data['clause']}:\nx{data['var']}={data['val']}"
+        for n, data in G.nodes(data=True)
+    }
+    nx.draw_networkx_labels(G, pos, labels, font_size=8, font_color = 'white')
+    
+    plt.axis('off')
+    plt.show()
+
+def layout_objective(x, G, r_b, d_min,
+                     w_clause=10.0, w_var=1.0, w_non=1.0, w_min=50.0,
+                     dim=2):
+
+    X = x.reshape(-1, dim)
+    loss = 0.0
+    N = len(G)
+
+    # clause and variable edges 
+    for u, v, data in G.edges(data=True):
+        d = np.linalg.norm(X[u] - X[v])
+        if data['type'] == 'clause':
+            # pull clause paris together strongly
+            loss += w_clause * (d - r_b)**2
+        else: 
+            # pull connected verticies towards r_b less strongly
+            loss += w_var * (d - r_b)**2
+
+    # push non-edges outside the blockade radius
+    for i in range(N):
+        for j in range(i+1, N):
+            if not G.has_edge(i, j):
+                d = np.linalg.norm(X[i] - X[j])
+                loss += w_non * np.exp(-(d / r_b)**2)
+
+    # Ensure minimum spacing
+    for i in range(N):
+        for j in range(i+1, N):
+            d = np.linalg.norm(X[i] - X[j])
+            if d < d_min:
+                loss += w_min * (d_min - d)**2
+
+    return loss
+
+
+def pretty_print_clauses(clauses, bitstr):
+
+    assignment = {}
+    for i, (lit1, lit2) in enumerate(clauses):
+        b1 = bitstr[2*i]
+        b2 = bitstr[2*i + 1]
+        if b1 == '0':
+            var = abs(lit1)
+            assignment[var] = True if lit1 > 0 else False
+        if b2 == '0':
+            var = abs(lit2)
+            assignment[var] = True if lit2 > 0 else False
+
+    vars_all = sorted({abs(l) for clause in clauses for l in clause})
+    print("Variable assignment:")
+    for v in vars_all:
+        val = assignment.get(v, None)
+        val_str = {True: "True", False: "False", None: "unspecified"}[val]
+        print(f"  x{v} = {val_str}")
+    print()
+
+    def lit_str(lit):
+        return f"x{lit}" if lit > 0 else f"¬x{abs(lit)}"
+    def eval_lit(lit):
+        v = abs(lit)
+        if v not in assignment: 
+            return False
+        val = assignment[v]
+        return val if lit > 0 else (not val)
+
+    for idx, (lit1, lit2) in enumerate(clauses, start=1):
+        clause_repr = f"({lit_str(lit1)} ∨ {lit_str(lit2)})"
+        sat = eval_lit(lit1) or eval_lit(lit2)
+        status = "satisfied" if sat else "unsatisfied"
+        print(f"Clause {idx}: {clause_repr} -> {status}")
+
+
+def _build_waveform(durations, anchors, n_per_seg=200):
+    t_samples, y_samples, bounds = [], [], [0.0]
+    t0 = 0.0
+    for dt, y0, y1 in zip(durations, anchors[:-1], anchors[1:]):
+        ts = np.linspace(t0, t0 + dt, n_per_seg, endpoint=False)
+        ys = np.linspace(y0, y1, n_per_seg, endpoint=False)
+        t_samples.append(ts)
+        y_samples.append(ys)
+        t0 += dt
+        bounds.append(t0)
+    t_samples.append(np.array([t0]))
+    y_samples.append(np.array([anchors[-1]]))
+    return np.concatenate(t_samples), np.concatenate(y_samples), np.array(bounds)
+
+def visualise_pulses(r_durations, r_anchors, d_durations, d_anchors, n_per_seg=200, title = None):
+
+    t_rabi, y_rabi, r_bounds = _build_waveform(r_durations, r_anchors, n_per_seg)
+    t_det,  y_det,  d_bounds = _build_waveform(d_durations, d_anchors, n_per_seg)
+
+
+    fig, ax_rabi = plt.subplots(figsize=(15, 4))
+    ax_det = ax_rabi.twinx()
+
+    r_line, = ax_rabi.plot(t_rabi, y_rabi, label="Ω(t)  (Rabi)",   color='C0')
+    d_line, = ax_det.plot(t_det,  y_det,  label="Δ(t)  (Detuning)", color='C1')
+
+    ax_rabi.set_xlabel("Time (µs)")
+    ax_rabi.set_ylabel("Ω(t)")
+    ax_det.set_ylabel("Δ(t)")
+
+
+    all_bounds = sorted(set(np.round(np.concatenate([r_bounds, d_bounds]), 4)))
+    y_min, y_max = ax_rabi.get_ylim()
+
+    ax_rabi.axvline(0, linestyle=":", linewidth=0.8)
+    ax_rabi.text(0, y_max * 1.05, f"$t_0$", ha="center", va="bottom")
+
+    for idx, tb in enumerate(all_bounds[1:], start=1):
+        ax_rabi.axvline(tb, linestyle=":", linewidth=0.8)
+        ax_rabi.text(tb, y_max * 1.05, f"$t_{{{idx}}}$", ha="center", va="bottom")
+
+
+    for tb, amp in zip(r_bounds, r_anchors):
+        ax_rabi.text(tb, amp, f"{amp:.2f}", ha="right", va="bottom",
+                     color=r_line.get_color())
+    for tb, amp in zip(d_bounds, d_anchors):
+        ax_det.text(tb, amp, f"{amp:.2f}", ha="left", va="top",
+                     color=d_line.get_color())
+
+
+    fig.legend(handles=[r_line, d_line],
+               loc="upper center",
+               bbox_to_anchor=(0.5, -0.01),
+               ncol=2,
+               frameon=False)
+
+    if title is not None:
+        fig.suptitle(title)
+
+    fig.tight_layout()
+    plt.show()
+
