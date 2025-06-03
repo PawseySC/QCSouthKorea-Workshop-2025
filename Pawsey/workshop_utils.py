@@ -3,15 +3,15 @@
 # generic plotting library 
 import matplotlib
 import matplotlib.pyplot as plt
-import mpl_interactions.ipyplot as iplt
+#import mpl_interactions.ipyplot as iplt
 matplotlib.logging.getLogger('matplotlib.font_manager').disabled = True
 # import interactive widgets
-from ipywidgets import interact, interactive, fixed, interact_manual
-import ipywidgets as widgets
-from IPython.display import display, Markdown, Latex
+#from ipywidgets import interact, interactive, fixed, interact_manual
+#import ipywidgets as widgets
+#from IPython.display import display, Markdown, Latex
 # import plotly 
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+#import plotly.graph_objects as go
+#from plotly.subplots import make_subplots
 from scipy.linalg import expm
 
 # python utils 
